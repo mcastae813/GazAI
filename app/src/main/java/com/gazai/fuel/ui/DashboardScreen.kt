@@ -101,7 +101,7 @@ fun DashboardScreen(vm: AppViewModel) {
                 Column(Modifier.padding(16.dp)) {
                     Text(v.name, style = MaterialTheme.typography.titleLarge)
                     Text(
-                        (if (v.type == "motorcycle") "Motorcycle" else "Car") +
+                        vehicleSubtitle(v, s.imperial) +
                             latestOdometer(entries, service)?.let { "  |  ${s.distance(it)}" }.orEmpty(),
                     )
                 }

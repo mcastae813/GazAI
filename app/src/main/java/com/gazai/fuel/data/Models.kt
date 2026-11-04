@@ -13,7 +13,17 @@ data class Vehicle(
     val type: String,
     /** Absolute path of a photo copied into app storage, or null. */
     val photoPath: String? = null,
-)
+    val make: String? = null,
+    val model: String? = null,
+    val year: Int? = null,
+    val plate: String? = null,
+    /** e.g. "Regular", "Premium", "Diesel" */
+    val fuelType: String? = null,
+    val tankLiters: Double? = null,
+) {
+    /** "2019 Honda CB500F" style description from the details that are filled in. */
+    fun describe(): String = listOfNotNull(year?.toString(), make, model).joinToString(" ")
+}
 
 /** All values are stored in metric: liters, kilometers. */
 @Entity(

@@ -32,6 +32,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.gazai.fuel.AppViewModel
 
@@ -62,8 +63,7 @@ fun AddScreen(vm: AppViewModel) {
         Text("Fuel up", style = MaterialTheme.typography.headlineMedium)
 
         if (vehicles.isEmpty()) {
-            Text("Add your car or motorcycle first, then fuel-ups take one photo.")
-            Button(onClick = { vm.tab = 3 }) { Text("Add vehicle") }
+            Welcome(vm)
             return@Column
         }
 
@@ -84,7 +84,7 @@ fun AddScreen(vm: AppViewModel) {
         ) {
             if (vm.busy) CircularProgressIndicator(Modifier.padding(end = 12.dp), strokeWidth = 2.dp)
             Text(
-                if (vm.busy) "Reading the pump..." else "Take photo of the pump",
+                if (vm.busy) (vm.status ?: "Reading the pump...") else "Take photo of the pump",
                 style = MaterialTheme.typography.titleMedium,
             )
         }
@@ -143,5 +143,29 @@ fun AddScreen(vm: AppViewModel) {
             Text("Filled the tank completely")
         }
         Button(onClick = { vm.save() }, modifier = Modifier.fillMaxWidth()) { Text("Save") }
+    }
+}
+
+/** First run: ask for the vehicle details and the OpenRouter key before anything else. */
+@Composable
+private fun Welcome(vm: AppViewModel) {
+    var key by remember { mutableStateOf(vm.settings.apiKey) }
+    Text("Welcome to GazAI", style = MaterialTheme.typography.titleLarge)
+    Text("Tell me about your vehicle. You can add more (like your motorcycle) later in the Garage tab.")
+    VehicleForm(vm, null, onDone = {})
+    HorizontalDivider(Modifier.padding(vertical = 4.dp))
+    Text("Free AI key", style = MaterialTheme.typography.titleMedium)
+    Text(
+        "Create a free key at openrouter.ai/keys and paste it here so GazAI can read your pump photos.",
+        style = MaterialTheme.typography.bodySmall,
+    )
+    OutlinedTextField(
+        key, { key = it }, label = { Text("OpenRouter API key") }, singleLine = true,
+        visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+    )
+    if (key.trim() != vm.settings.apiKey) {
+        Button(onClick = { vm.updateSettings(vm.settings.copy(apiKey = key.trim())) }) { Text("Save key") }
+    } else if (key.isNotBlank()) {
+        Text("Key saved.", color = MaterialTheme.colorScheme.primary)
     }
 }

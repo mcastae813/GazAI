@@ -68,9 +68,22 @@ private val MIGRATION_1_2 = object : Migration(1, 2) {
     }
 }
 
+private val MIGRATION_2_3 = object : Migration(2, 3) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `vehicles` ADD COLUMN `make` TEXT")
+        db.execSQL("ALTER TABLE `vehicles` ADD COLUMN `model` TEXT")
+        db.execSQL("ALTER TABLE `vehicles` ADD COLUMN `year` INTEGER")
+        db.execSQL("ALTER TABLE `vehicles` ADD COLUMN `plate` TEXT")
+        db.execSQL("ALTER TABLE `vehicles` ADD COLUMN `fuelType` TEXT")
+        db.execSQL("ALTER TABLE `vehicles` ADD COLUMN `tankLiters` REAL")
+    }
+}
+
+internal val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+
 @Database(
     entities = [Vehicle::class, FuelEntry::class, MaintenanceRecord::class],
-    version = 2,
+    version = 3,
     exportSchema = false,
 )
 abstract class AppDb : RoomDatabase() {
@@ -79,7 +92,7 @@ abstract class AppDb : RoomDatabase() {
     companion object {
         fun create(ctx: Context): AppDb =
             Room.databaseBuilder(ctx.applicationContext, AppDb::class.java, "gazai.db")
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(*ALL_MIGRATIONS)
                 .build()
     }
 }
