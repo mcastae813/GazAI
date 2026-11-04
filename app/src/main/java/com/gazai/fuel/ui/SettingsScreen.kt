@@ -10,6 +10,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -39,7 +40,8 @@ fun SettingsScreen(vm: AppViewModel) {
         Text("OpenRouter", style = MaterialTheme.typography.titleMedium)
         Text(
             "Create a free key at openrouter.ai/keys. GazAI only uses models whose price is 0 " +
-                "(the \":free\" ones), picking one automatically and falling back if it is busy.",
+                "(the \":free\" ones), picking one automatically and falling back if it is busy. If every model " +
+                "fails, allow free model endpoints at openrouter.ai/settings/privacy.",
             style = MaterialTheme.typography.bodySmall,
         )
         OutlinedTextField(
@@ -79,6 +81,11 @@ fun SettingsScreen(vm: AppViewModel) {
             draft.currency, { edit(draft.copy(currency = it.take(4))) },
             label = { Text("Currency symbol") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
+
+        OutlinedButton(onClick = { vm.testAi(draft.apiKey, draft.textModel) }, enabled = !vm.aiTesting && draft.apiKey.isNotBlank()) {
+            Text(if (vm.aiTesting) "Testing..." else "Test AI connection")
+        }
+        vm.aiTestResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
         Button(onClick = { vm.updateSettings(draft); saved = true }) { Text("Save settings") }
         if (saved) Text("Saved.", color = MaterialTheme.colorScheme.primary)

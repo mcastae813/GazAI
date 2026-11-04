@@ -3,6 +3,7 @@ package com.gazai.fuel.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,24 +11,19 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.gazai.fuel.AppViewModel
@@ -36,8 +32,10 @@ import com.gazai.fuel.data.Vehicle
 @Composable
 fun VehiclesScreen(vm: AppViewModel) {
     val vehicles by vm.vehicles.collectAsState()
-    var name by remember { mutableStateOf("") }
-    var type by remember { mutableStateOf("car") }
+    val entries by vm.entries.collectAsState()
+    var editingId by remember { mutableStateOf<Long?>(null) }
+    var adding by remember { mutableStateOf(false) }
+    var confirmDelete by remember { mutableStateOf<Vehicle?>(null) }
     var photoTarget by remember { mutableStateOf<Vehicle?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val v = photoTarget
@@ -45,6 +43,22 @@ fun VehiclesScreen(vm: AppViewModel) {
         photoTarget = null
     }
     val defaultId = vm.defaultVehicle()?.id
+    val s = vm.settings
+
+    confirmDelete?.let { v ->
+        val fills = entries.count { it.vehicleId == v.id }
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete ${v.name}?") },
+            text = { Text("This also deletes its $fills fill-ups and all its service records. It can't be undone.") },
+            confirmButton = {
+                TextButton(onClick = { vm.deleteVehicle(v); confirmDelete = null; if (editingId == v.id) editingId = null }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
+    }
 
     Column(
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -55,35 +69,40 @@ fun VehiclesScreen(vm: AppViewModel) {
             Card(Modifier.fillMaxWidth()) {
                 Column {
                     VehiclePhoto(v.photoPath, v.name, 140.dp)
-                    Row(Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text(v.name, style = MaterialTheme.typography.titleMedium)
-                            Text(
-                                (if (v.type == "motorcycle") "Motorcycle" else "Car") + if (v.id == defaultId) "  |  Default" else "",
-                                style = MaterialTheme.typography.bodySmall,
-                            )
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (editingId == v.id) {
+                            Text("Edit ${v.name}", style = MaterialTheme.typography.titleMedium)
+                            VehicleForm(vm, v, onDone = { editingId = null }, onCancel = { editingId = null })
+                        } else {
+                            Text(v.name + if (v.id == defaultId) "  (default)" else "", style = MaterialTheme.typography.titleMedium)
+                            Text(vehicleSubtitle(v, s.imperial), style = MaterialTheme.typography.bodySmall)
+                            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                OutlinedButton(onClick = { editingId = v.id; adding = false }) { Text("Edit") }
+                                OutlinedButton(onClick = {
+                                    photoTarget = v
+                                    picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                }) { Text(if (v.photoPath == null) "Add photo" else "Photo") }
+                                if (v.id != defaultId) OutlinedButton(onClick = { vm.setDefault(v) }) { Text("Make default") }
+                                TextButton(onClick = { confirmDelete = v }) { Text("Delete", color = MaterialTheme.colorScheme.error) }
+                            }
                         }
-                        IconButton(onClick = { vm.deleteVehicle(v) }) { Icon(Icons.Default.Delete, contentDescription = "Delete vehicle and its history") }
-                    }
-                    Row(Modifier.padding(start = 16.dp, bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = {
-                            photoTarget = v
-                            picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                        }) { Text(if (v.photoPath == null) "Add photo" else "Change photo") }
-                        if (v.id != defaultId) OutlinedButton(onClick = { vm.setDefault(v) }) { Text("Make default") }
                     }
                 }
             }
         }
-        Text("Add vehicle", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(name, { name = it }, label = { Text("Name (e.g. Honda CB500, Corolla)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            FilterChip(selected = type == "car", onClick = { type = "car" }, label = { Text("Car") })
-            FilterChip(selected = type == "motorcycle", onClick = { type = "motorcycle" }, label = { Text("Motorcycle") })
+        if (adding || vehicles.isEmpty()) {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("Add vehicle", style = MaterialTheme.typography.titleMedium)
+                    VehicleForm(vm, null, onDone = { adding = false }, onCancel = if (vehicles.isEmpty()) null else ({ adding = false }))
+                }
+            }
+        } else {
+            Button(onClick = { adding = true; editingId = null }) { Text("Add vehicle") }
         }
-        Button(onClick = { vm.addVehicle(name, type); name = "" }, enabled = name.isNotBlank()) { Text("Add") }
+        vm.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
         Text(
-            "The default vehicle is the one the app opens the camera for. Add a photo of each vehicle to recognise it quickly.",
+            "The default vehicle is the one the camera opens for when you start the app.",
             style = MaterialTheme.typography.bodySmall,
         )
     }

@@ -13,14 +13,32 @@ android {
         applicationId = "com.gazai.fuel"
         minSdk = 28
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.2.0"
+        versionCode = 3
+        versionName = "0.3.0"
+    }
+
+    // Releases are signed with one permanent key so new versions install over old ones.
+    // CI passes it via the SIGNING_KEYSTORE_B64 / SIGNING_PASSWORD repository secrets.
+    val storePath = System.getenv("SIGNING_STORE_FILE")
+    signingConfigs {
+        create("release") {
+            if (storePath != null) {
+                storeFile = file(storePath)
+                storePassword = System.getenv("SIGNING_PASSWORD")
+                keyAlias = "gazai"
+                keyPassword = System.getenv("SIGNING_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (storePath != null) signingConfig = signingConfigs.getByName("release")
         }
+    }
+    testOptions {
+        unitTests.isIncludeAndroidResources = true
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -50,4 +68,11 @@ dependencies {
     implementation("androidx.room:room-runtime:$room")
     implementation("androidx.room:room-ktx:$room")
     ksp("androidx.room:room-compiler:$room")
+
+    // On-device text recognition: helps the AI read pump digits and works as a fallback.
+    implementation("com.google.mlkit:text-recognition:16.0.1")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core-ktx:1.6.1")
 }

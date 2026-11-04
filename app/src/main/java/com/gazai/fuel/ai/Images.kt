@@ -10,7 +10,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 object Images {
-    private fun decode(ctx: Context, uri: Uri, maxSide: Int): Bitmap {
+    fun decode(ctx: Context, uri: Uri, maxSide: Int): Bitmap {
         val source = ImageDecoder.createSource(ctx.contentResolver, uri)
         return ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
             val longest = maxOf(info.size.width, info.size.height)
