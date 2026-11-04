@@ -8,6 +8,9 @@ import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.Update
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
 import kotlinx.coroutines.flow.Flow
 
 @Dao
@@ -18,6 +21,9 @@ interface FuelDao {
     @Insert
     suspend fun insertVehicle(v: Vehicle): Long
 
+    @Update
+    suspend fun updateVehicle(v: Vehicle)
+
     @Delete
     suspend fun deleteVehicle(v: Vehicle)
 
@@ -27,16 +33,53 @@ interface FuelDao {
     @Insert
     suspend fun insertEntry(e: FuelEntry): Long
 
+    @Update
+    suspend fun updateEntry(e: FuelEntry)
+
     @Delete
     suspend fun deleteEntry(e: FuelEntry)
+
+    @Query("SELECT * FROM maintenance ORDER BY dateMillis DESC, id DESC")
+    fun maintenance(): Flow<List<MaintenanceRecord>>
+
+    @Insert
+    suspend fun insertMaintenance(m: MaintenanceRecord): Long
+
+    @Delete
+    suspend fun deleteMaintenance(m: MaintenanceRecord)
 }
 
-@Database(entities = [Vehicle::class, FuelEntry::class], version = 1, exportSchema = false)
+private val MIGRATION_1_2 = object : Migration(1, 2) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `vehicles` ADD COLUMN `photoPath` TEXT")
+        db.execSQL(
+            "CREATE TABLE IF NOT EXISTS `maintenance` (" +
+                "`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, " +
+                "`vehicleId` INTEGER NOT NULL, " +
+                "`dateMillis` INTEGER NOT NULL, " +
+                "`odometerKm` REAL, " +
+                "`type` TEXT NOT NULL, " +
+                "`cost` REAL NOT NULL, " +
+                "`notes` TEXT, " +
+                "`nextDueKm` REAL, " +
+                "FOREIGN KEY(`vehicleId`) REFERENCES `vehicles`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE)",
+        )
+        db.execSQL("CREATE INDEX IF NOT EXISTS `index_maintenance_vehicleId` ON `maintenance` (`vehicleId`)")
+    }
+}
+
+@Database(
+    entities = [Vehicle::class, FuelEntry::class, MaintenanceRecord::class],
+    version = 2,
+    exportSchema = false,
+)
 abstract class AppDb : RoomDatabase() {
     abstract fun dao(): FuelDao
 
     companion object {
         fun create(ctx: Context): AppDb =
-            Room.databaseBuilder(ctx.applicationContext, AppDb::class.java, "gazai.db").build()
+            Room.databaseBuilder(ctx.applicationContext, AppDb::class.java, "gazai.db")
+                .addMigrations(MIGRATION_1_2)
+                .build()
     }
 }

@@ -11,6 +11,12 @@ data class Settings(
     val currency: String = "$",
     /** Save AI results immediately when they look complete. */
     val autoSave: Boolean = true,
+    /** "kml" (km/L), "l100" (L/100km) or "mpg" */
+    val effUnit: String = "kml",
+    /** Vehicle id used for quick-add; -1 = first vehicle. */
+    val defaultVehicleId: Long = -1,
+    /** Open the camera as soon as the app starts. */
+    val openCameraOnStart: Boolean = true,
 )
 
 class SettingsStore(ctx: Context) {
@@ -23,6 +29,9 @@ class SettingsStore(ctx: Context) {
         imperial = sp.getBoolean("imperial", false),
         currency = sp.getString("currency", "$") ?: "$",
         autoSave = sp.getBoolean("autoSave", true),
+        effUnit = sp.getString("effUnit", "kml") ?: "kml",
+        defaultVehicleId = sp.getLong("defaultVehicleId", -1),
+        openCameraOnStart = sp.getBoolean("openCameraOnStart", true),
     )
 
     fun save(s: Settings) {
@@ -33,6 +42,9 @@ class SettingsStore(ctx: Context) {
             .putBoolean("imperial", s.imperial)
             .putString("currency", s.currency)
             .putBoolean("autoSave", s.autoSave)
+            .putString("effUnit", s.effUnit)
+            .putLong("defaultVehicleId", s.defaultVehicleId)
+            .putBoolean("openCameraOnStart", s.openCameraOnStart)
             .apply()
     }
 }

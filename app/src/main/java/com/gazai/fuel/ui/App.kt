@@ -5,8 +5,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Home
-import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.NavigationBar
@@ -25,9 +26,10 @@ import com.gazai.fuel.fmt
 private data class Tab(val label: String, val icon: ImageVector)
 
 private val tabs = listOf(
-    Tab("Log", Icons.Default.Home),
-    Tab("Add", Icons.Default.Add),
-    Tab("Vehicles", Icons.Default.Menu),
+    Tab("Fuel up", Icons.Default.Add),
+    Tab("Stats", Icons.Default.Star),
+    Tab("Log", Icons.Default.DateRange),
+    Tab("Garage", Icons.Default.Home),
     Tab("Settings", Icons.Default.Settings),
 )
 
@@ -50,9 +52,10 @@ fun App(vm: AppViewModel) {
         ) { pad ->
             Column(Modifier.padding(pad).fillMaxSize()) {
                 when (vm.tab) {
-                    0 -> LogScreen(vm)
-                    1 -> AddScreen(vm)
-                    2 -> VehiclesScreen(vm)
+                    0 -> AddScreen(vm)
+                    1 -> DashboardScreen(vm)
+                    2 -> LogScreen(vm)
+                    3 -> VehiclesScreen(vm)
                     else -> SettingsScreen(vm)
                 }
             }
@@ -69,9 +72,19 @@ fun Settings.distance(km: Double) =
 
 fun Settings.money(v: Double) = "$currency${fmt(v)}"
 
-fun Settings.efficiency(lPer100: Double) =
-    if (imperial) "${fmt(Units.MPG_FACTOR / lPer100, 1)} mpg" else "${fmt(lPer100, 1)} L/100km"
+fun Settings.efficiency(lPer100: Double) = when (effUnit) {
+    "mpg" -> "${fmt(Units.MPG_FACTOR / lPer100, 1)} mpg"
+    "l100" -> "${fmt(lPer100, 1)} L/100km"
+    else -> "${fmt(100.0 / lPer100, 1)} km/L"
+}
 
 fun Settings.unitPrice(totalCost: Double, liters: Double): String =
     if (liters <= 0) "-" else if (imperial) "$currency${fmt(totalCost / (liters / Units.L_PER_GAL))}/gal"
     else "$currency${fmt(totalCost / liters)}/L"
+
+/** Efficiency as a plain number in the user's chosen unit (for charts). */
+fun Settings.effValue(lPer100: Double): Double = when (effUnit) {
+    "mpg" -> Units.MPG_FACTOR / lPer100
+    "l100" -> lPer100
+    else -> 100.0 / lPer100
+}

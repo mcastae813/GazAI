@@ -135,7 +135,7 @@ object OpenRouter {
     private fun buildPrompt(text: String, vehicles: List<Vehicle>, today: LocalDate, hasImage: Boolean): String {
         val v = vehicles.joinToString("; ") { "${it.name} (${it.type})" }.ifBlank { "none" }
         return """
-You extract fuel fill-up records. ${if (hasImage) "The image is a fuel receipt or pump display. " else ""}
+You extract fuel fill-up records. ${if (hasImage) "The image is a photo of a fuel pump display or receipt. On a pump, 'Total', 'Sale', 'Amount' or 'Price' is total_cost and 'Volume', 'Gallons' or 'Liters' is volume; the small per-unit number is price_per_unit. " else ""}
 User vehicles: $v.
 Today is $today.
 User note: ${text.ifBlank { "(none)" }}

@@ -13,6 +13,7 @@ import com.gazai.fuel.ai.OpenRouter
 import com.gazai.fuel.ai.ParsedFill
 import com.gazai.fuel.data.AppDb
 import com.gazai.fuel.data.FuelEntry
+import com.gazai.fuel.data.MaintenanceRecord
 import com.gazai.fuel.data.Settings
 import com.gazai.fuel.data.SettingsStore
 import com.gazai.fuel.data.Units
@@ -22,6 +23,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Locale
@@ -36,8 +38,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     val vehicles = dao.vehicles().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val entries = dao.entries().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+    val maintenance = dao.maintenance().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
+    /** 0 Add, 1 Stats, 2 Log, 3 Garage, 4 Settings. The app opens on Add. */
     var tab by mutableIntStateOf(0)
+
+    private var pendingAutoCamera = settings.openCameraOnStart
+    private var cameraUri: Uri? = null
+    var lastAdded by mutableStateOf<FuelEntry?>(null); private set
 
     // ---- Add screen state (form values are in the user's display units) ----
     var selectedVehicleId by mutableStateOf<Long?>(null)
@@ -54,8 +62,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var message by mutableStateOf<String?>(null)
     var error by mutableStateOf<String?>(null)
 
+    fun defaultVehicle(): Vehicle? =
+        vehicles.value.firstOrNull { it.id == settings.defaultVehicleId } ?: vehicles.value.firstOrNull()
+
     fun currentVehicle(): Vehicle? =
-        vehicles.value.firstOrNull { it.id == selectedVehicleId } ?: vehicles.value.firstOrNull()
+        vehicles.value.firstOrNull { it.id == selectedVehicleId } ?: defaultVehicle()
+
+    /** True once per app start when the camera should pop open for a quick pump photo. */
+    fun consumeAutoCamera(): Boolean {
+        if (!pendingAutoCamera || tab != 0 || imageUri != null) return false
+        if (vehicles.value.isEmpty() || settings.apiKey.isBlank()) return false
+        pendingAutoCamera = false
+        selectedVehicleId = null // quick add always targets the default vehicle
+        return true
+    }
+
+    fun newCameraUri(): Uri = Images.newCameraUri(getApplication()).also { cameraUri = it }
+
+    fun onPhotoTaken(success: Boolean) {
+        val uri = cameraUri
+        cameraUri = null
+        if (!success || uri == null) return
+        imageUri = uri
+        analyze()
+    }
 
     fun updateSettings(s: Settings) {
         store.save(s)
@@ -64,16 +94,82 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun addVehicle(name: String, type: String) = viewModelScope.launch {
         if (name.isBlank()) return@launch
+        val first = vehicles.value.isEmpty()
         val id = dao.insertVehicle(Vehicle(name = name.trim(), type = type))
-        if (selectedVehicleId == null) selectedVehicleId = id
+        if (first) updateSettings(settings.copy(defaultVehicleId = id))
     }
 
-    fun deleteVehicle(v: Vehicle) = viewModelScope.launch { dao.deleteVehicle(v) }
+    fun deleteVehicle(v: Vehicle) = viewModelScope.launch {
+        dao.deleteVehicle(v)
+        v.photoPath?.let { File(it).delete() }
+        if (settings.defaultVehicleId == v.id) updateSettings(settings.copy(defaultVehicleId = -1))
+        if (selectedVehicleId == v.id) selectedVehicleId = null
+    }
+
+    fun setDefault(v: Vehicle) = updateSettings(settings.copy(defaultVehicleId = v.id))
+
+    fun setVehiclePhoto(v: Vehicle, uri: Uri) = viewModelScope.launch {
+        try {
+            val path = withContext(Dispatchers.IO) { Images.saveVehiclePhoto(getApplication(), uri) }
+            dao.updateVehicle(v.copy(photoPath = path))
+            v.photoPath?.let { File(it).delete() }
+        } catch (e: Exception) {
+            error = "Could not save photo: ${e.message}"
+        }
+    }
+
     fun deleteEntry(e: FuelEntry) = viewModelScope.launch { dao.deleteEntry(e) }
+    fun deleteMaintenance(m: MaintenanceRecord) = viewModelScope.launch { dao.deleteMaintenance(m) }
+
+    fun undoLast() {
+        val e = lastAdded ?: return
+        lastAdded = null
+        message = "Removed."
+        viewModelScope.launch { dao.deleteEntry(e) }
+    }
+
+    /** Adds the odometer (display units) to the entry that was just auto-added. */
+    fun attachOdometerToLast(text: String) {
+        val e = lastAdded ?: return
+        val v = text.replace(',', '.').trim().toDoubleOrNull()
+        if (v == null || v <= 0) { error = "Odometer must be a number."; return }
+        val km = if (settings.imperial) v * Units.KM_PER_MI else v
+        val updated = e.copy(odometerKm = km)
+        lastAdded = updated
+        error = null
+        message = "Odometer saved."
+        viewModelScope.launch { dao.updateEntry(updated) }
+    }
+
+    /** Returns an error message, or null when the record was saved. Inputs are in display units. */
+    fun addMaintenance(
+        vehicleId: Long, type: String, date: String, odo: String, cost: String, notes: String, nextDue: String,
+    ): String? {
+        val imperial = settings.imperial
+        val day = runCatching { LocalDate.parse(date.trim()) }.getOrNull() ?: return "Date must look like 2026-11-02."
+        if (type.isBlank()) return "Enter what was serviced."
+        fun dist(t: String): Double? = t.replace(',', '.').trim().takeIf { it.isNotEmpty() }?.toDoubleOrNull()
+            ?.let { if (imperial) it * Units.KM_PER_MI else it }
+        if (odo.isNotBlank() && dist(odo) == null) return "Odometer must be a number."
+        if (nextDue.isNotBlank() && dist(nextDue) == null) return "Next due must be a number."
+        val money = cost.replace(',', '.').trim().ifEmpty { "0" }.toDoubleOrNull() ?: return "Cost must be a number."
+        val rec = MaintenanceRecord(
+            vehicleId = vehicleId,
+            dateMillis = day.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
+            odometerKm = dist(odo),
+            type = type.trim(),
+            cost = money,
+            notes = notes.trim().ifBlank { null },
+            nextDueKm = dist(nextDue),
+        )
+        viewModelScope.launch { dao.insertMaintenance(rec) }
+        return null
+    }
 
     /** Called when another app shares a receipt photo or text to GazAI. */
     fun handleShared(text: String?, uri: Uri?) {
-        tab = 1
+        pendingAutoCamera = false
+        tab = 0
         if (text != null) note = text
         if (uri != null) imageUri = uri
         if (settings.apiKey.isNotBlank()) analyze()
@@ -87,10 +183,10 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun analyze() {
         if (busy) return
         if (note.isBlank() && imageUri == null) {
-            error = "Type a note or pick a photo first."; return
+            error = "Type a note or take a photo first."; return
         }
         viewModelScope.launch {
-            busy = true; error = null; message = null
+            busy = true; error = null; message = null; lastAdded = null
             try {
                 val uri = imageUri
                 val dataUri = uri?.let {
@@ -187,7 +283,8 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val unit = if (imperial) "gal" else "L"
         val label = "${fmt(vol)} $unit for ${settings.currency}${fmt(money)} on ${vehicle.name}"
         viewModelScope.launch {
-            dao.insertEntry(entry)
+            val id = dao.insertEntry(entry)
+            lastAdded = entry.copy(id = id)
             clearForm()
             error = null
             message = if (auto) "Added automatically: $label" else "Saved: $label"

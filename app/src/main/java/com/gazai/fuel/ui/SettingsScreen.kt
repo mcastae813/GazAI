@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -58,7 +59,17 @@ fun SettingsScreen(vm: AppViewModel) {
         Text("Preferences", style = MaterialTheme.typography.titleMedium)
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Switch(checked = draft.imperial, onCheckedChange = { edit(draft.copy(imperial = it)) })
-            Text("Imperial units (mi, US gal, mpg)")
+            Text("Imperial units (mi, US gallons)")
+        }
+        Text("Efficiency unit", style = MaterialTheme.typography.bodyMedium)
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            listOf("kml" to "km/L", "l100" to "L/100km", "mpg" to "mpg").forEach { (k, label) ->
+                FilterChip(selected = draft.effUnit == k, onClick = { edit(draft.copy(effUnit = k)) }, label = { Text(label) })
+            }
+        }
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Switch(checked = draft.openCameraOnStart, onCheckedChange = { edit(draft.copy(openCameraOnStart = it)) })
+            Text("Open the camera when the app starts")
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Switch(checked = draft.autoSave, onCheckedChange = { edit(draft.copy(autoSave = it)) })
