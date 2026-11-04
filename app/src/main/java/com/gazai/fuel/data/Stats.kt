@@ -81,3 +81,56 @@ fun summarize(entries: List<FuelEntry>): Summary {
         lastPricePerLiter = last?.let { if (it.liters > 0) it.totalCost / it.liters else null },
     )
 }
+
+data class EffPoint(val entry: FuelEntry, val lPer100: Double)
+
+/** Measured consumption points, oldest first. */
+fun efficiencySeries(entries: List<FuelEntry>): List<EffPoint> {
+    val cons = consumptionByEntry(entries)
+    return entries
+        .sortedWith(compareBy({ it.dateMillis }, { it.odometerKm ?: 0.0 }, { it.id }))
+        .mapNotNull { e -> cons[e.id]?.let { EffPoint(e, it) } }
+}
+
+/** Spend per calendar month for the last [months] months ending at [now], oldest first. */
+fun monthlySpend(entries: List<FuelEntry>, months: Int, now: java.time.YearMonth): List<Pair<java.time.YearMonth, Double>> {
+    val zone = java.time.ZoneId.systemDefault()
+    val byMonth = entries.groupBy { java.time.YearMonth.from(java.time.Instant.ofEpochMilli(it.dateMillis).atZone(zone)) }
+    return (months - 1 downTo 0).map { back ->
+        val ym = now.minusMonths(back.toLong())
+        ym to (byMonth[ym]?.sumOf { it.totalCost } ?: 0.0)
+    }
+}
+
+data class UsageStats(
+    val distanceKm: Double?,
+    val costPerKm: Double?,
+)
+
+/** Distance covered between first and last odometer reading and cost per km over that span. */
+fun usageStats(entries: List<FuelEntry>): UsageStats {
+    val withOdo = entries.filter { it.odometerKm != null }.sortedBy { it.odometerKm }
+    if (withOdo.size < 2) return UsageStats(null, null)
+    val dist = withOdo.last().odometerKm!! - withOdo.first().odometerKm!!
+    if (dist <= 0) return UsageStats(null, null)
+    // The first fill paid for km before the tracked span, so leave it out.
+    val cost = withOdo.drop(1).sumOf { it.totalCost }
+    return UsageStats(dist, cost / dist)
+}
+
+data class DueItem(val record: MaintenanceRecord, val remainingKm: Double)
+
+/** Latest odometer known for a vehicle from fills and services. */
+fun latestOdometer(entries: List<FuelEntry>, service: List<MaintenanceRecord>): Double? =
+    (entries.mapNotNull { it.odometerKm } + service.mapNotNull { it.odometerKm }).maxOrNull()
+
+/** For each service type, the most recent record that sets a next-due odometer, ordered by urgency. */
+fun dueItems(service: List<MaintenanceRecord>, currentOdoKm: Double?): List<DueItem> {
+    if (currentOdoKm == null) return emptyList()
+    return service
+        .groupBy { it.type.trim().lowercase() }
+        .values
+        .mapNotNull { list -> list.maxByOrNull { it.dateMillis }?.takeIf { it.nextDueKm != null } }
+        .map { DueItem(it, it.nextDueKm!! - currentOdoKm) }
+        .sortedBy { it.remainingKm }
+}

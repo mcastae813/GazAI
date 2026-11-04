@@ -16,6 +16,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.material3.Button
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.text.input.KeyboardType
+import java.time.LocalDate
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,7 +38,7 @@ import java.time.Instant
 import java.time.ZoneId
 
 @Composable
-fun LogScreen(vm: AppViewModel) {
+private fun FuelLog(vm: AppViewModel) {
     val vehicles by vm.vehicles.collectAsState()
     val entries by vm.entries.collectAsState()
     val s = vm.settings
@@ -36,7 +47,6 @@ fun LogScreen(vm: AppViewModel) {
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        item { Text("Fuel log", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(top = 16.dp)) }
 
         if (vehicles.isEmpty()) {
             item { Text("No vehicles yet. Add your car and motorcycle in the Vehicles tab.") }
@@ -82,6 +92,107 @@ fun LogScreen(vm: AppViewModel) {
                         if (extra.isNotEmpty()) Text(extra, style = MaterialTheme.typography.bodySmall)
                     }
                     IconButton(onClick = { vm.deleteEntry(e) }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+                }
+            }
+        }
+        item { Column(Modifier.padding(8.dp)) {} }
+    }
+}
+
+@Composable
+fun LogScreen(vm: AppViewModel) {
+    var showService by remember { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth()) {
+        Text("Log", style = MaterialTheme.typography.headlineMedium, modifier = Modifier.padding(start = 16.dp, top = 16.dp))
+        Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            FilterChip(selected = !showService, onClick = { showService = false }, label = { Text("Fuel") })
+            FilterChip(selected = showService, onClick = { showService = true }, label = { Text("Service") })
+        }
+        if (showService) ServiceLog(vm) else FuelLog(vm)
+    }
+}
+
+private val serviceTypes = listOf("Oil change", "Tires", "Brakes", "Chain", "Air filter", "Battery", "Inspection", "Other")
+
+@Composable
+private fun ServiceLog(vm: AppViewModel) {
+    val vehicles by vm.vehicles.collectAsState()
+    val records by vm.maintenance.collectAsState()
+    val s = vm.settings
+    var adding by remember { mutableStateOf(false) }
+    var vehicleId by remember { mutableStateOf<Long?>(null) }
+    var type by remember { mutableStateOf("") }
+    var date by remember { mutableStateOf(LocalDate.now().toString()) }
+    var odo by remember { mutableStateOf("") }
+    var cost by remember { mutableStateOf("") }
+    var notes by remember { mutableStateOf("") }
+    var nextDue by remember { mutableStateOf("") }
+    var err by remember { mutableStateOf<String?>(null) }
+    val unit = if (s.imperial) "mi" else "km"
+    val decimal = KeyboardOptions(keyboardType = KeyboardType.Decimal)
+    val target = vehicles.firstOrNull { it.id == vehicleId } ?: vm.defaultVehicle()
+
+    LazyColumn(
+        Modifier.fillMaxWidth().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        item {
+            if (vehicles.isEmpty()) {
+                Text("Add a vehicle in the Garage tab first.")
+            } else if (!adding) {
+                Button(onClick = { adding = true }) { Text("Add service") }
+            } else {
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            vehicles.forEach { v ->
+                                FilterChip(selected = target?.id == v.id, onClick = { vehicleId = v.id }, label = { Text(v.name) })
+                            }
+                        }
+                        Row(Modifier.horizontalScroll(rememberScrollState()).fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            serviceTypes.forEach { t -> FilterChip(selected = type == t, onClick = { type = t }, label = { Text(t) }) }
+                        }
+                        OutlinedTextField(type, { type = it }, label = { Text("What was done") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(date, { date = it }, label = { Text("Date (YYYY-MM-DD)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(odo, { odo = it }, label = { Text("Odometer ($unit, optional)") }, singleLine = true, keyboardOptions = decimal, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(cost, { cost = it }, label = { Text("Cost (${s.currency}, optional)") }, singleLine = true, keyboardOptions = decimal, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(nextDue, { nextDue = it }, label = { Text("Next due at odometer ($unit, optional)") }, singleLine = true, keyboardOptions = decimal, modifier = Modifier.fillMaxWidth())
+                        OutlinedTextField(notes, { notes = it }, label = { Text("Notes (optional)") }, modifier = Modifier.fillMaxWidth())
+                        err?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Button(onClick = {
+                                val id = target?.id
+                                err = if (id == null) "Pick a vehicle." else vm.addMaintenance(id, type, date, odo, cost, notes, nextDue)
+                                if (err == null) {
+                                    adding = false; type = ""; odo = ""; cost = ""; notes = ""; nextDue = ""
+                                    date = LocalDate.now().toString()
+                                }
+                            }) { Text("Save") }
+                            androidx.compose.material3.TextButton(onClick = { adding = false; err = null }) { Text("Cancel") }
+                        }
+                    }
+                }
+            }
+        }
+        items(records, key = { "m${it.id}" }) { m ->
+            val vName = vehicles.firstOrNull { it.id == m.vehicleId }?.name ?: "?"
+            val day = Instant.ofEpochMilli(m.dateMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+            Card(Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(start = 16.dp, top = 8.dp, bottom = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("${m.type}  -  $vName", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            listOfNotNull(
+                                day.toString(),
+                                m.odometerKm?.let { s.distance(it) },
+                                if (m.cost > 0) s.money(m.cost) else null,
+                                m.nextDueKm?.let { "next at ${s.distance(it)}" },
+                            ).joinToString("  |  "),
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        m.notes?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    }
+                    IconButton(onClick = { vm.deleteMaintenance(m) }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
                 }
             }
         }
