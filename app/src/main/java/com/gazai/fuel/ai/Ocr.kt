@@ -8,13 +8,16 @@ import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.coroutines.resume
 
-/** On-device OCR (ML Kit). Returns "" when nothing could be read; never throws. */
+/** On-device OCR (ML Kit). Returns "" when nothing could be read; only throws when cancelled. */
 object Ocr {
     suspend fun read(ctx: Context, uri: Uri): String {
         val bitmap = try {
             withContext(Dispatchers.IO) { Images.decode(ctx, uri, 1600) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return ""
         }
@@ -26,6 +29,8 @@ object Ocr {
                     .addOnFailureListener { if (cont.isActive) cont.resume("") }
                     .addOnCompleteListener { recognizer.close() }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             ""
         }

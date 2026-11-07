@@ -15,64 +15,52 @@ data class Summary(
     val lastPricePerLiter: Double?,
 )
 
+/** Oldest first; on the same day, readings without an odometer go first. */
+private val chronological = compareBy<FuelEntry>({ it.dateMillis }, { it.odometerKm ?: 0.0 }, { it.id })
+
+/** Fuel burned over a measured distance, closed by the fill-up [closingId]. */
+private class Interval(val closingId: Long, val liters: Double, val km: Double)
+
 /**
- * Full-tank-to-full-tank consumption (L/100km) per entry id.
- * An entry gets a value when it is a full fill-up, has an odometer, and a previous
- * full fill-up with an odometer exists; partial fills in between are added to the fuel used.
+ * Full-tank-to-full-tank intervals. The tank is full after every full fill-up, so all fuel added after a
+ * full fill-up with an odometer, up to and including the next full fill-up with an odometer, was burned
+ * over that distance. Fill-ups without an odometer in between (full or partial) just add their fuel.
  */
-fun consumptionByEntry(entries: List<FuelEntry>): Map<Long, Double> {
-    val out = HashMap<Long, Double>()
-    var lastFullOdo: Double? = null
+private fun intervals(entries: List<FuelEntry>): List<Interval> {
+    val out = ArrayList<Interval>()
+    var lastOdo: Double? = null
     var accum = 0.0
-    for (e in entries.sortedWith(compareBy({ it.dateMillis }, { it.odometerKm ?: 0.0 }, { it.id }))) {
-        val prev = lastFullOdo
+    for (e in entries.sortedWith(chronological)) {
+        val odo = e.odometerKm
+        val prev = lastOdo
         if (prev == null) {
-            if (e.fullTank && e.odometerKm != null) {
-                lastFullOdo = e.odometerKm
+            if (e.fullTank && odo != null) {
+                lastOdo = odo
                 accum = 0.0
             }
             continue
         }
         accum += e.liters
-        if (e.fullTank) {
-            val odo = e.odometerKm
-            if (odo != null) {
-                val dist = odo - prev
-                if (dist > 0) out[e.id] = accum / dist * 100.0
-                lastFullOdo = odo
-                accum = 0.0
-            } else {
-                lastFullOdo = null
-                accum = 0.0
-            }
+        if (e.fullTank && odo != null) {
+            val dist = odo - prev
+            if (dist > 0) out += Interval(e.id, accum, dist)
+            lastOdo = odo
+            accum = 0.0
         }
     }
     return out
 }
 
+/** Full-tank-to-full-tank consumption (L/100km), keyed by the fill-up that closes each interval. */
+fun consumptionByEntry(entries: List<FuelEntry>): Map<Long, Double> =
+    intervals(entries).associate { it.closingId to it.liters / it.km * 100.0 }
+
 fun summarize(entries: List<FuelEntry>): Summary {
-    val cons = consumptionByEntry(entries)
-    var fuel = 0.0
-    var dist = 0.0
-    val sorted = entries.sortedWith(compareBy({ it.dateMillis }, { it.odometerKm ?: 0.0 }, { it.id }))
-    // Weighted average: sum fuel / sum distance over measured intervals.
-    var lastFullOdo: Double? = null
-    var accum = 0.0
-    for (e in sorted) {
-        val prev = lastFullOdo
-        if (prev == null) {
-            if (e.fullTank && e.odometerKm != null) { lastFullOdo = e.odometerKm; accum = 0.0 }
-            continue
-        }
-        accum += e.liters
-        if (e.fullTank) {
-            val odo = e.odometerKm
-            if (odo != null && cons.containsKey(e.id)) { fuel += accum; dist += odo - prev }
-            lastFullOdo = odo
-            accum = 0.0
-        }
-    }
-    val last = sorted.lastOrNull()
+    // Weighted average: total fuel / total distance over the measured intervals.
+    val measured = intervals(entries)
+    val fuel = measured.sumOf { it.liters }
+    val dist = measured.sumOf { it.km }
+    val last = entries.sortedWith(chronological).lastOrNull()
     return Summary(
         fills = entries.size,
         totalCost = entries.sumOf { it.totalCost },
@@ -88,7 +76,7 @@ data class EffPoint(val entry: FuelEntry, val lPer100: Double)
 fun efficiencySeries(entries: List<FuelEntry>): List<EffPoint> {
     val cons = consumptionByEntry(entries)
     return entries
-        .sortedWith(compareBy({ it.dateMillis }, { it.odometerKm ?: 0.0 }, { it.id }))
+        .sortedWith(chronological)
         .mapNotNull { e -> cons[e.id]?.let { EffPoint(e, it) } }
 }
 
@@ -107,14 +95,17 @@ data class UsageStats(
     val costPerKm: Double?,
 )
 
-/** Distance covered between first and last odometer reading and cost per km over that span. */
+/** Distance between the first and last odometer readings, and the fuel cost per km over that span. */
 fun usageStats(entries: List<FuelEntry>): UsageStats {
-    val withOdo = entries.filter { it.odometerKm != null }.sortedBy { it.odometerKm }
-    if (withOdo.size < 2) return UsageStats(null, null)
-    val dist = withOdo.last().odometerKm!! - withOdo.first().odometerKm!!
+    val sorted = entries.sortedWith(chronological)
+    val first = sorted.indexOfFirst { it.odometerKm != null }
+    val last = sorted.indexOfLast { it.odometerKm != null }
+    if (first < 0 || last <= first) return UsageStats(null, null)
+    val dist = sorted[last].odometerKm!! - sorted[first].odometerKm!!
     if (dist <= 0) return UsageStats(null, null)
-    // The first fill paid for km before the tracked span, so leave it out.
-    val cost = withOdo.drop(1).sumOf { it.totalCost }
+    // The fill at the first reading paid for km driven before the span; every later fill up to the last
+    // reading paid for km inside it, whether or not it has an odometer.
+    val cost = sorted.subList(first + 1, last + 1).sumOf { it.totalCost }
     return UsageStats(dist, cost / dist)
 }
 

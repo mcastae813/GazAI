@@ -82,17 +82,24 @@ fun SettingsScreen(vm: AppViewModel) {
             label = { Text("Currency symbol") }, singleLine = true, modifier = Modifier.fillMaxWidth(),
         )
 
-        OutlinedButton(onClick = { vm.testAi(draft.apiKey, draft.textModel) }, enabled = !vm.aiTesting && draft.apiKey.isNotBlank()) {
+        OutlinedButton(onClick = { vm.testAi(draft.apiKey, draft.textModel, draft.visionModel) }, enabled = !vm.aiTesting && draft.apiKey.isNotBlank()) {
             Text(if (vm.aiTesting) "Testing..." else "Test AI connection")
         }
+        Text(
+            "Reads a sample note and a sample pump photo, so it uses a few of your free daily requests.",
+            style = MaterialTheme.typography.bodySmall,
+        )
         vm.aiTestResult?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
 
         Button(onClick = { vm.updateSettings(draft); saved = true }) { Text("Save settings") }
         if (saved) Text("Saved.", color = MaterialTheme.colorScheme.primary)
 
         Text(
-            "Tip: share a receipt photo or text from any app to GazAI and it will be read automatically. " +
-                "Your key and data stay on this phone; photos are sent to OpenRouter only when you ask for AI reading.",
+            "Tip: share a receipt photo or text from any app to GazAI and it will be read automatically.\n\n" +
+                "Privacy: your fill-ups and vehicles are stored on this phone (and in your Android backup), but your key is left out of " +
+                "Android's cloud backup. Each photo or note GazAI reads is sent to OpenRouter and on to a free model " +
+                "provider, along with your vehicles' names, year, make and model (never the plate). Free " +
+                "providers may log what they receive or train on it.",
             style = MaterialTheme.typography.bodySmall,
         )
     }

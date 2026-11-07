@@ -22,8 +22,20 @@ data class Settings(
 class SettingsStore(ctx: Context) {
     private val sp = ctx.getSharedPreferences("gazai", Context.MODE_PRIVATE)
 
+    /** The API key has its own file so Android backups can leave it out (see the backup rules in res/xml). */
+    private val keyStore = ctx.getSharedPreferences("gazai_key", Context.MODE_PRIVATE)
+
+    init {
+        // 0.3 and earlier kept the key with the other settings. Drop that copy only once the move is saved.
+        sp.getString("apiKey", null)?.let { old ->
+            val moved = !keyStore.getString("apiKey", null).isNullOrBlank() ||
+                keyStore.edit().putString("apiKey", old).commit()
+            if (moved) sp.edit().remove("apiKey").apply()
+        }
+    }
+
     fun load() = Settings(
-        apiKey = sp.getString("apiKey", "") ?: "",
+        apiKey = keyStore.getString("apiKey", "") ?: "",
         textModel = sp.getString("textModel", "") ?: "",
         visionModel = sp.getString("visionModel", "") ?: "",
         imperial = sp.getBoolean("imperial", false),
@@ -35,8 +47,8 @@ class SettingsStore(ctx: Context) {
     )
 
     fun save(s: Settings) {
+        keyStore.edit().putString("apiKey", s.apiKey.trim()).apply()
         sp.edit()
-            .putString("apiKey", s.apiKey.trim())
             .putString("textModel", s.textModel.trim())
             .putString("visionModel", s.visionModel.trim())
             .putBoolean("imperial", s.imperial)

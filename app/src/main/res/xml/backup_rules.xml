@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older. Everything else (fill-ups, vehicles, settings, photos) is backed up. -->
+<full-backup-content>
+    <!-- The OpenRouter API key -->
+    <exclude domain="sharedpref" path="gazai_key.xml" />
+    <!-- Camera hand-off state, only meaningful on this phone -->
+    <exclude domain="sharedpref" path="gazai_state.xml" />
+</full-backup-content>

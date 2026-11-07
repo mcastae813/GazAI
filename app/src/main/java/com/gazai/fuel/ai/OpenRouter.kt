@@ -1,15 +1,23 @@
 package com.gazai.fuel.ai
 
 import com.gazai.fuel.data.Vehicle
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
 import java.net.URL
 import java.net.UnknownHostException
 import java.time.LocalDate
+import kotlin.coroutines.cancellation.CancellationException
+import kotlin.math.abs
 
 class ApiException(val code: Int, message: String) : Exception(message)
 
@@ -44,10 +52,22 @@ data class ReadResult(val fill: ParsedFill, val model: String)
 object OpenRouter {
     private const val BASE = "https://openrouter.ai/api/v1"
 
+    /** Upper bound for reading one fill-up across all the models tried. */
+    private const val TIME_LIMIT_MS = 120_000L
+
     @Volatile private var freeCache: List<ModelInfo>? = null
 
-    private fun call(path: String, apiKey: String?, body: String?): String {
+    private suspend fun call(path: String, apiKey: String?, body: String?): String = withContext(Dispatchers.IO) {
         val conn = URL(BASE + path).openConnection() as HttpURLConnection
+        // The blocking calls below ignore coroutine cancellation (Stop button, time limit). Closing the
+        // connection from another thread makes them fail at once instead of waiting for the timeout.
+        val abort = launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                awaitCancellation()
+            } finally {
+                conn.disconnect()
+            }
+        }
         try {
             conn.connectTimeout = 15_000
             conn.readTimeout = 60_000
@@ -65,8 +85,12 @@ object OpenRouter {
             val stream = if (code in 200..299) conn.inputStream else conn.errorStream
             val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
             if (code !in 200..299) throw ApiException(code, errorMessage(text))
-            return text
+            text
+        } catch (e: IOException) {
+            ensureActive() // closed because we were cancelled: report the cancellation, not the socket error
+            throw e
         } finally {
+            abort.cancel()
             conn.disconnect()
         }
     }
@@ -114,6 +138,8 @@ object OpenRouter {
         val auto = try {
             val pref = if (needImage) visionPreference else textPreference
             freeModels().filter { !needImage || it.acceptsImages }.map { it.id }.sortedBy { rank(it, pref) }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (explicit.isBlank()) throw ReadFailure("Can't reach OpenRouter (${explain(e)}). Check your internet connection.")
             emptyList()
@@ -129,7 +155,7 @@ object OpenRouter {
             .put("max_tokens", 1500)
             .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
             .toString()
-        val root = JSONObject(withContext(Dispatchers.IO) { call("/chat/completions", apiKey, body) })
+        val root = JSONObject(call("/chat/completions", apiKey, body))
         root.optJSONObject("error")?.let { throw ApiException(it.optInt("code", 502), it.optString("message")) }
         val msg = root.optJSONArray("choices")?.optJSONObject(0)?.optJSONObject("message")
             ?: throw IllegalStateException("no answer")
@@ -162,8 +188,8 @@ object OpenRouter {
 
     /**
      * Reads a fill-up from a note and/or a photo. Photo: tries free vision models (with the on-device OCR
-     * text as a hint), then falls back to text models fed only the OCR text. Keeps trying while models
-     * answer without the numbers; throws [ReadFailure] listing what each model did.
+     * text as a hint), then, if [ocrFallback], text models fed only the OCR text. Keeps trying while models
+     * answer without the numbers, for at most [timeLimitMs]; throws [ReadFailure] listing what each model did.
      */
     suspend fun parseFillUp(
         apiKey: String,
@@ -174,20 +200,37 @@ object OpenRouter {
         ocrText: String?,
         vehicles: List<Vehicle>,
         today: LocalDate,
+        ocrFallback: Boolean = true,
+        timeLimitMs: Long = TIME_LIMIT_MS,
     ): ReadResult {
         if (apiKey.isBlank()) throw ReadFailure("Add your free OpenRouter API key in Settings first.")
         val attempts = mutableListOf<String>()
         var best: ReadResult? = null
+        var outOfTime = false
+        val deadline = System.currentTimeMillis() + timeLimitMs
         val ocr = ocrText?.trim()?.take(1500)?.takeIf { it.isNotEmpty() }
 
         suspend fun tryModels(models: List<String>, content: Any): ReadResult? {
             for (m in models) {
+                val left = deadline - System.currentTimeMillis()
+                if (left <= 0) {
+                    outOfTime = true
+                    return null
+                }
                 try {
-                    val fill = parseReply(complete(apiKey, m, content))
+                    val reply = withTimeoutOrNull(left) { complete(apiKey, m, content) }
+                    if (reply == null) {
+                        attempts += "$m: no answer before the time limit"
+                        outOfTime = true
+                        return null
+                    }
+                    val fill = parseReply(reply)
                     val r = ReadResult(fill, m)
                     if (fill.isComplete) return r
                     if (fill.score > (best?.fill?.score ?: 0)) best = r
                     attempts += "$m: ${if (fill.score > 0) "read only part of it" else "couldn't find the numbers"}"
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: ApiException) {
                     if (e.code == 401) throw ReadFailure("OpenRouter rejected the API key. Check it in Settings.")
                     attempts += "$m: ${explain(e)}"
@@ -206,11 +249,13 @@ object OpenRouter {
             val vision = candidates(visionModel, needImage = true, limit = 4)
             if (vision.isEmpty()) attempts += "No free photo model is available on OpenRouter right now."
             tryModels(vision, content)?.let { return it }
-            if (ocr != null) {
-                tryModels(candidates(textModel, needImage = false, limit = 3), buildPrompt(text, vehicles, today, Mode.OcrOnly(ocr)))
-                    ?.let { return it }
-            } else {
-                attempts += "On-device text recognition found no text in the photo."
+            if (ocrFallback) {
+                if (ocr != null) {
+                    tryModels(candidates(textModel, needImage = false, limit = 3), buildPrompt(text, vehicles, today, Mode.OcrOnly(ocr)))
+                        ?.let { return it }
+                } else {
+                    attempts += "On-device text recognition found no text in the photo."
+                }
             }
         } else {
             tryModels(candidates(textModel, needImage = false, limit = 4), buildPrompt(text, vehicles, today, Mode.Text))
@@ -220,9 +265,13 @@ object OpenRouter {
 
         val headline = when {
             attempts.any { it.contains("privacy settings") } ->
-                "Your OpenRouter privacy settings block free models. Open openrouter.ai/settings/privacy and allow free model endpoints, then try again."
+                "Your OpenRouter privacy settings block free models. To use them, allow free model endpoints at " +
+                    "openrouter.ai/settings/privacy (those providers may log or train on what you send), then try again."
             attempts.isNotEmpty() && attempts.all { it.contains("rate limited") } ->
                 "All free models are busy or your daily free limit is used up. Try again in a while."
+            outOfTime ->
+                "Stopped after ${timeLimitMs / 1000} seconds without a clear reading. Free models may be busy: " +
+                    "try again, or type the numbers in."
             imageDataUri != null ->
                 "Couldn't read the pump. Make sure the total and liters are sharp and fill the photo, or type them in."
             else -> "Couldn't read the fill-up."
@@ -230,21 +279,38 @@ object OpenRouter {
         throw ReadFailure(headline + "\n\nDetails:\n" + attempts.joinToString("\n") { "- $it" })
     }
 
-    /** Quick end-to-end check for the Settings screen. */
-    suspend fun selfTest(apiKey: String, textModel: String): String {
+    /** End-to-end check for the Settings screen: a typed note, then [testPhoto] (10.000 L for 20.00). */
+    suspend fun selfTest(apiKey: String, textModel: String, visionModel: String, testPhoto: String): String {
         val models = try {
             freeModels(force = true)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             return "Can't reach OpenRouter: ${explain(e)}"
         }
         val head = "${models.size} free models, ${models.count { it.acceptsImages }} accept photos."
-        return try {
-            val r = parseFillUp(apiKey, "", textModel, "filled up 10 liters for 20.00", null, null, emptyList(), LocalDate.now())
-            "$head\nTest OK: ${r.model} read ${r.fill.volume} L for ${r.fill.totalCost}."
-        } catch (e: Exception) {
-            "$head\n${e.message}"
+        val today = LocalDate.now()
+        val note = testRead("Notes") {
+            parseFillUp(apiKey, "", textModel, "filled up 10 liters for 20.00", null, null, emptyList(), today)
         }
+        val photo = testRead("Photos") {
+            parseFillUp(apiKey, visionModel, "", "", testPhoto, null, emptyList(), today, ocrFallback = false)
+        }
+        return "$head\n\n$note\n\n$photo"
     }
+
+    private suspend fun testRead(what: String, read: suspend () -> ReadResult): String = try {
+        val r = read()
+        val ok = r.fill.volume.near(10.0) && r.fill.totalCost.near(20.0)
+        "$what: ${if (ok) "OK" else "answered with the wrong numbers"} (${r.model} read ${r.fill.volume} L for " +
+            "${r.fill.totalCost}${if (ok) "" else "; expected 10 L for 20.00"})."
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        "$what: ${e.message}"
+    }
+
+    private fun Double?.near(x: Double) = this != null && abs(this - x) < 0.01
 
     private sealed interface Mode {
         data object Text : Mode
@@ -292,21 +358,28 @@ Numbers must be plain JSON numbers with '.' as the decimal separator and no curr
 
     /**
      * Parses "12.345", "12,345" (decimal comma), "1,234.56", "1.234,56", "$45.20", "45.20 MXN".
-     * A single separator is treated as the decimal point because pumps show 3-decimal volumes.
+     * A single separator is normally the decimal point, because pumps show 3-decimal volumes. For [money]
+     * (a total), a single separator followed by exactly 3 digits groups thousands: "1,050" is 1050, not 1.05.
      */
-    internal fun parseNumber(raw: String): Double? {
+    internal fun parseNumber(raw: String, money: Boolean = false): Double? {
         val s = raw.filter { it.isDigit() || it == '.' || it == ',' || it == '-' }
         if (s.none { it.isDigit() }) return null
         val lastDot = s.lastIndexOf('.')
         val lastComma = s.lastIndexOf(',')
+        fun threeDigitsAfter(i: Int) = s.length - i - 1 == 3
         val normalized = when {
             lastDot >= 0 && lastComma >= 0 -> {
                 val dec = if (lastDot > lastComma) '.' else ','
                 val thousands = if (dec == '.') ',' else '.'
                 s.replace(thousands.toString(), "").replace(dec, '.')
             }
-            lastComma >= 0 -> if (s.count { it == ',' } > 1) s.replace(",", "") else s.replace(',', '.')
+            lastComma >= 0 -> when {
+                s.count { it == ',' } > 1 -> s.replace(",", "")
+                money && threeDigitsAfter(lastComma) -> s.replace(",", "")
+                else -> s.replace(',', '.')
+            }
             lastDot >= 0 && s.count { it == '.' } > 1 -> s.replace(".", "")
+            lastDot >= 0 && money && threeDigitsAfter(lastDot) -> s.replace(".", "")
             else -> s
         }
         return normalized.toDoubleOrNull()
@@ -318,11 +391,11 @@ Numbers must be plain JSON numbers with '.' as the decimal separator and no curr
         val end = cleaned.lastIndexOf('}')
         if (start < 0 || end <= start) throw IllegalStateException("answer had no JSON")
         val j = JSONObject(cleaned.substring(start, end + 1))
-        fun num(k: String): Double? {
+        fun num(k: String, money: Boolean = false): Double? {
             if (!j.has(k) || j.isNull(k)) return null
             return when (val o = j.get(k)) {
                 is Number -> o.toDouble()
-                is String -> parseNumber(o)
+                is String -> parseNumber(o, money)
                 else -> null
             }?.takeIf { it > 0 }
         }
@@ -340,7 +413,7 @@ Numbers must be plain JSON numbers with '.' as the decimal separator and no curr
             odometerUnit = str("odometer_unit")?.lowercase(),
             volume = num("volume"),
             volumeUnit = str("volume_unit"),
-            totalCost = num("total_cost"),
+            totalCost = num("total_cost", money = true),
             pricePerUnit = num("price_per_unit"),
             fullTank = full,
             station = str("station"),

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 and newer. Everything else (fill-ups, vehicles, settings, photos) is backed up. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- The OpenRouter API key stays out of Google's cloud backup -->
+        <exclude domain="sharedpref" path="gazai_key.xml" />
+        <exclude domain="sharedpref" path="gazai_state.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <!-- A direct phone-to-phone transfer may carry the key over -->
+        <exclude domain="sharedpref" path="gazai_state.xml" />
+    </device-transfer>
+</data-extraction-rules>

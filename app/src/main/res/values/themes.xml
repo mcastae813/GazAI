@@ -1,3 +1,4 @@
 <resources>
+    <!-- Dark variant in values-night, so the window behind Compose matches the system theme. -->
     <style name="Theme.GazAI" parent="android:Theme.Material.Light.NoActionBar" />
 </resources>

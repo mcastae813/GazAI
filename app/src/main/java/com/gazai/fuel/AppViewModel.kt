@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.gazai.fuel.ai.FillRules
 import com.gazai.fuel.ai.Images
 import com.gazai.fuel.ai.Ocr
 import com.gazai.fuel.ai.OpenRouter
@@ -20,19 +21,28 @@ import com.gazai.fuel.data.SettingsStore
 import com.gazai.fuel.data.Units
 import com.gazai.fuel.data.Vehicle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.math.BigDecimal
+import java.math.RoundingMode
+import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
 import java.util.Locale
+import kotlin.coroutines.cancellation.CancellationException
 
 fun fmt(d: Double, digits: Int = 2): String = String.format(Locale.US, "%.${digits}f", d)
 
+/** Up to [maxDigits] decimals without trailing zeros: 32.415, 40, 8.56. */
+fun plain(d: Double, maxDigits: Int = 3): String =
+    BigDecimal(d).setScale(maxDigits, RoundingMode.HALF_UP).stripTrailingZeros().toPlainString()
+
 class AppViewModel(app: Application) : AndroidViewModel(app) {
-    private val dao = AppDb.create(app).dao()
+    private val dao = AppDb.get(app).dao()
     private val store = SettingsStore(app)
     /** Survives the app being killed while the camera app is open. */
     private val state = app.getSharedPreferences("gazai_state", android.content.Context.MODE_PRIVATE)
@@ -50,7 +60,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var lastAdded by mutableStateOf<FuelEntry?>(null); private set
 
     // ---- Add screen state (form values are in the user's display units) ----
-    var selectedVehicleId by mutableStateOf<Long?>(null)
+
+    /** Vehicle the fill-up goes to (picked with a chip, or named in a typed note); null = the default. */
+    var selectedVehicleId by mutableStateOf<Long?>(null); private set
+
+    /** The user tapped a vehicle chip for the current form; the AI's guess never overrides that. */
+    private var vehiclePicked = false
+
+    /** Fill-up being changed (opened from the Log), or null when adding a new one. */
+    var editing by mutableStateOf<FuelEntry?>(null); private set
+
     var note by mutableStateOf("")
     var imageUri by mutableStateOf<Uri?>(null)
     var date by mutableStateOf(LocalDate.now().toString())
@@ -61,50 +80,81 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     var fullTank by mutableStateOf(true)
     var fromAi by mutableStateOf(false)
     var busy by mutableStateOf(false); private set
+    var saving by mutableStateOf(false); private set
     var message by mutableStateOf<String?>(null)
     var error by mutableStateOf<String?>(null)
     var status by mutableStateOf<String?>(null); private set
     var aiTestResult by mutableStateOf<String?>(null); private set
     var aiTesting by mutableStateOf(false); private set
 
-    fun defaultVehicle(): Vehicle? =
-        vehicles.value.firstOrNull { it.id == settings.defaultVehicleId } ?: vehicles.value.firstOrNull()
+    private var analysis: Job? = null
 
-    fun currentVehicle(): Vehicle? =
-        vehicles.value.firstOrNull { it.id == selectedVehicleId } ?: defaultVehicle()
+    fun defaultVehicle(): Vehicle? = defaultVehicleIn(vehicles.value)
+
+    fun currentVehicle(): Vehicle? = currentVehicleIn(vehicles.value)
+
+    private fun defaultVehicleIn(list: List<Vehicle>): Vehicle? =
+        list.firstOrNull { it.id == settings.defaultVehicleId } ?: list.firstOrNull()
+
+    private fun currentVehicleIn(list: List<Vehicle>): Vehicle? =
+        list.firstOrNull { it.id == selectedVehicleId } ?: defaultVehicleIn(list)
+
+    /** A vehicle chip was tapped. */
+    fun pickVehicle(id: Long) {
+        selectedVehicleId = id
+        vehiclePicked = true
+    }
 
     /** True once per app start when the camera should pop open for a quick pump photo. */
     fun consumeAutoCamera(): Boolean {
-        if (!pendingAutoCamera || tab != 0 || imageUri != null) return false
+        if (!pendingAutoCamera || tab != 0 || imageUri != null || editing != null) return false
         if (vehicles.value.isEmpty() || settings.apiKey.isBlank()) return false
         pendingAutoCamera = false
         selectedVehicleId = null // quick add always targets the default vehicle
+        vehiclePicked = false
         return true
     }
 
     /** The activity was recreated (e.g. Android killed it while the camera was open): don't pop the camera again. */
     fun onRestored() { pendingAutoCamera = false }
 
+    /** Settings may have been changed by another GazAI window (sharing to GazAI opens a second one). */
+    fun reloadSettings() { settings = store.load() }
+
     fun newCameraUri(): Uri = Images.newCameraUri(getApplication()).also {
-        state.edit().putString("cameraUri", it.toString()).commit()
+        state.edit()
+            .putString("cameraUri", it.toString())
+            .putLong("cameraVehicleId", selectedVehicleId ?: -1L)
+            .commit()
     }
 
     fun onPhotoTaken(success: Boolean) {
         val uri = state.getString("cameraUri", null)?.let(Uri::parse)
-        state.edit().remove("cameraUri").apply()
+        // Android may have closed GazAI while the camera was open; the photo is for the vehicle chosen before.
+        val vehicleId = state.getLong("cameraVehicleId", -1L).takeIf { it >= 0 }
+        state.edit().remove("cameraUri").remove("cameraVehicleId").apply()
         pendingAutoCamera = false
         if (!success || uri == null) return
+        if (vehicleId != null) selectedVehicleId = vehicleId
         imageUri = uri
         analyze()
     }
 
-    fun testAi(apiKey: String, textModel: String) {
+    fun testAi(apiKey: String, textModel: String, visionModel: String) {
         if (aiTesting) return
         aiTesting = true
         aiTestResult = null
         viewModelScope.launch {
-            aiTestResult = try { OpenRouter.selfTest(apiKey.trim(), textModel.trim()) } catch (e: Exception) { e.message }
-            aiTesting = false
+            try {
+                val photo = withContext(Dispatchers.Default) { Images.testPumpPhoto() }
+                aiTestResult = OpenRouter.selfTest(apiKey.trim(), textModel.trim(), visionModel.trim(), photo)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                aiTestResult = e.message
+            } finally {
+                aiTesting = false
+            }
         }
     }
 
@@ -129,23 +179,27 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         val describe = listOfNotNull(y?.toString(), clean(make), clean(model)).joinToString(" ")
         val name = nickname.trim().ifBlank { describe }
         if (name.isBlank()) return "Enter the make and model, or a name."
-        val v = (existing ?: Vehicle(name = name, type = type)).copy(
+        fun Vehicle.withForm() = copy(
             name = name, type = type, make = clean(make), model = clean(model), year = y,
             plate = clean(plate), fuelType = clean(fuelType), tankLiters = tankL,
         )
         viewModelScope.launch {
             if (existing == null) {
                 val first = vehicles.value.isEmpty()
-                val id = dao.insertVehicle(v)
+                val id = dao.insertVehicle(Vehicle(name = name, type = type).withForm())
                 if (first) updateSettings(settings.copy(defaultVehicleId = id))
             } else {
-                dao.updateVehicle(v)
+                // Re-read so a photo saved meanwhile isn't overwritten with the old one.
+                val fresh = dao.vehicle(existing.id) ?: return@launch
+                dao.updateVehicle(fresh.withForm())
             }
         }
         return null
     }
 
     fun deleteVehicle(v: Vehicle) = viewModelScope.launch {
+        if (editing?.vehicleId == v.id) cancelEdit()
+        if (lastAdded?.vehicleId == v.id) lastAdded = null
         dao.deleteVehicle(v)
         v.photoPath?.let { File(it).delete() }
         if (settings.defaultVehicleId == v.id) updateSettings(settings.copy(defaultVehicleId = -1))
@@ -154,17 +208,30 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setDefault(v: Vehicle) = updateSettings(settings.copy(defaultVehicleId = v.id))
 
-    fun setVehiclePhoto(v: Vehicle, uri: Uri) = viewModelScope.launch {
+    /** Takes the vehicle id, not a [Vehicle], so it still works if the screen was recreated during the picker. */
+    fun setVehiclePhoto(vehicleId: Long, uri: Uri) = viewModelScope.launch {
         try {
             val path = withContext(Dispatchers.IO) { Images.saveVehiclePhoto(getApplication(), uri) }
-            dao.updateVehicle(v.copy(photoPath = path))
-            v.photoPath?.let { File(it).delete() }
+            val old = dao.vehicle(vehicleId)
+            if (old == null) {
+                File(path).delete()
+                return@launch
+            }
+            dao.setVehiclePhoto(vehicleId, path)
+            old.photoPath?.let { File(it).delete() }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = "Could not save photo: ${e.message}"
         }
     }
 
-    fun deleteEntry(e: FuelEntry) = viewModelScope.launch { dao.deleteEntry(e) }
+    fun deleteEntry(e: FuelEntry) {
+        if (editing?.id == e.id) cancelEdit()
+        if (lastAdded?.id == e.id) lastAdded = null
+        viewModelScope.launch { dao.deleteEntry(e) }
+    }
+
     fun deleteMaintenance(m: MaintenanceRecord) = viewModelScope.launch { dao.deleteMaintenance(m) }
 
     fun undoLast() {
@@ -216,6 +283,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun handleShared(text: String?, uri: Uri?) {
         pendingAutoCamera = false
         tab = 0
+        if (editing != null) cancelEdit()
         if (text != null) note = text
         if (uri != null) imageUri = uri
         if (settings.apiKey.isNotBlank()) analyze()
@@ -224,41 +292,76 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun clearForm() {
         note = ""; imageUri = null; odometer = ""; volume = ""; cost = ""; station = ""
         date = LocalDate.now().toString(); fullTank = true; fromAi = false
+        editing = null; vehiclePicked = false
     }
+
+    /** Opens a saved fill-up in the Fuel up form so it can be corrected. */
+    fun startEdit(e: FuelEntry) {
+        cancelAnalysis()
+        val imperial = settings.imperial
+        clearForm()
+        editing = e
+        selectedVehicleId = e.vehicleId
+        vehiclePicked = true
+        date = Instant.ofEpochMilli(e.dateMillis).atZone(ZoneId.systemDefault()).toLocalDate().toString()
+        odometer = e.odometerKm?.let { plain(if (imperial) it / Units.KM_PER_MI else it, 1) }.orEmpty()
+        volume = plain(if (imperial) e.liters / Units.L_PER_GAL else e.liters)
+        cost = fmt(e.totalCost)
+        station = e.station.orEmpty()
+        fullTank = e.fullTank
+        lastAdded = null; message = null; error = null
+        tab = 0
+    }
+
+    fun cancelEdit() {
+        clearForm()
+        selectedVehicleId = null
+        message = null; error = null
+    }
+
+    fun cancelAnalysis() { analysis?.cancel() }
 
     fun analyze() {
         if (busy) return
         if (note.isBlank() && imageUri == null) {
             error = "Type a note or take a photo first."; return
         }
-        viewModelScope.launch {
+        analysis = viewModelScope.launch {
             busy = true; error = null; message = null; lastAdded = null
             try {
                 val uri = imageUri
+                val text = note
                 var dataUri: String? = null
                 var ocr: String? = null
                 if (uri != null) {
                     status = "Preparing photo..."
                     dataUri = try {
                         withContext(Dispatchers.IO) { Images.toDataUri(getApplication(), uri) }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         throw IllegalStateException("Couldn't open the photo (${e.message}). Try taking it again.")
                     }
                     status = "Reading text on the photo..."
                     ocr = Ocr.read(getApplication(), uri)
                 }
+                // Read from the database: after Android restarts GazAI for the camera result, the Flows may be empty still.
+                val list = dao.vehicleList()
                 status = "Asking a free AI model..."
                 val result = OpenRouter.parseFillUp(
                     apiKey = settings.apiKey,
                     visionModel = settings.visionModel,
                     textModel = settings.textModel,
-                    text = note,
+                    text = text,
                     imageDataUri = dataUri,
                     ocrText = ocr,
-                    vehicles = vehicles.value,
+                    vehicles = list,
                     today = LocalDate.now(),
                 )
-                applyParsed(result.fill, result.model)
+                applyParsed(result.fill, result.model, text, list)
+            } catch (e: CancellationException) {
+                if (editing == null) message = "Stopped. Type the details below, or try again."
+                throw e
             } catch (e: Exception) {
                 error = e.message ?: e.javaClass.simpleName
             } finally {
@@ -268,64 +371,46 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun applyParsed(p: ParsedFill, model: String) {
+    private suspend fun applyParsed(p: ParsedFill, model: String, noteText: String, list: List<Vehicle>) {
         val imperial = settings.imperial
-        p.vehicle?.let { name -> matchVehicle(name)?.let { selectedVehicleId = it.id } }
-
-        val odoKm = p.odometer?.let { v ->
-            when (p.odometerUnit) { "mi" -> v * Units.KM_PER_MI; "km" -> v; else -> if (imperial) v * Units.KM_PER_MI else v }
+        // A pump photo says nothing about which vehicle it is, so only a typed note may choose one,
+        // and never over a vehicle the user picked.
+        if (noteText.isNotBlank() && !vehiclePicked) {
+            p.vehicle?.let { FillRules.matchVehicle(it, list) }?.let { selectedVehicleId = it.id }
         }
-        var liters = p.volume?.let { v ->
-            when (p.volumeUnit?.lowercase()) { "gal" -> v * Units.L_PER_GAL; "l" -> v; else -> if (imperial) v * Units.L_PER_GAL else v }
-        }
-        var total = p.totalCost
-        // price_per_unit is per the same unit as volume, so liters/cost can be derived either way.
-        if (total == null && p.volume != null && p.pricePerUnit != null) total = p.volume * p.pricePerUnit
-        if (liters == null && total != null && p.pricePerUnit != null && p.pricePerUnit > 0) {
-            val vol = total / p.pricePerUnit
-            liters = if (p.volumeUnit?.lowercase() == "gal" || (p.volumeUnit == null && imperial)) vol * Units.L_PER_GAL else vol
-        }
+        val r = FillRules.resolve(p, imperial)
 
         date = (p.date ?: LocalDate.now()).toString()
-        odometer = odoKm?.let { fmt(if (imperial) it / Units.KM_PER_MI else it, 0) } ?: ""
-        volume = liters?.let { fmt(if (imperial) it / Units.L_PER_GAL else it) } ?: ""
-        cost = total?.let { fmt(it) } ?: ""
+        odometer = r.odometerKm?.let { fmt(if (imperial) it / Units.KM_PER_MI else it, 0) } ?: ""
+        volume = r.liters?.let { plain(if (imperial) it / Units.L_PER_GAL else it) } ?: ""
+        cost = r.totalCost?.let { fmt(it) } ?: ""
         station = p.station ?: ""
         fullTank = p.fullTank ?: true
         fromAi = true
 
-        val tank = currentVehicle()?.tankLiters
-        val tooBig = tank != null && liters != null && liters > tank * 1.15
+        val vehicle = currentVehicleIn(list)
+        val last = vehicle?.let { dao.lastEntry(it.id) } ?: dao.lastEntryAnyVehicle()
+        val lastPrice = last?.takeIf { it.liters > 0 }?.let { it.totalCost / it.liters }
+        val problem = FillRules.problem(p, r, vehicle?.tankLiters, lastPrice, imperial)
         val readBy = " (read by ${model.substringAfter('/')})"
         when {
-            tooBig -> message = "The AI read more fuel than your ${fmt(tank!!, 0)} L tank holds. Check the numbers and tap Save.$readBy"
-            settings.autoSave && liters != null && total != null && currentVehicle() != null -> save(auto = true, suffix = readBy)
+            problem != null -> message = "$problem Check the numbers and tap Save.$readBy"
+            editing == null && settings.autoSave && r.liters != null && r.totalCost != null && vehicle != null ->
+                saveNow(auto = true, suffix = readBy)
             else -> message = "Check the details below and tap Save.$readBy"
         }
     }
 
-    private fun matchVehicle(name: String): Vehicle? {
-        val n = name.lowercase()
-        val list = vehicles.value
-        list.firstOrNull { it.name.lowercase() == n }?.let { return it }
-        list.firstOrNull { n.contains(it.name.lowercase()) || it.name.lowercase().contains(n) }?.let { return it }
-        list.filter { v -> listOfNotNull(v.make, v.model).any { it.isNotBlank() && n.contains(it.lowercase()) } }
-            .singleOrNull()?.let { return it }
-        val bike = listOf("moto", "bike", "scooter")
-        val wantType = when {
-            bike.any { n.contains(it) } -> "motorcycle"
-            n.contains("car") -> "car"
-            else -> return null
-        }
-        return list.singleOrNull { it.type == wantType }
+    /** Save button: adds the form as a new fill-up, or saves the changes to [editing]. */
+    fun save() {
+        if (busy || saving) return
+        viewModelScope.launch { saveNow(auto = false, suffix = "") }
     }
 
-    fun save(auto: Boolean = false, suffix: String = "") {
-        val vehicle = currentVehicle()
-        if (vehicle == null) { error = "Add a vehicle first."; return }
+    private suspend fun saveNow(auto: Boolean, suffix: String) {
         val imperial = settings.imperial
-        val vol = volume.replace(',', '.').toDoubleOrNull()
-        val money = cost.replace(',', '.').toDoubleOrNull()
+        val vol = volume.replace(',', '.').trim().toDoubleOrNull()
+        val money = cost.replace(',', '.').trim().toDoubleOrNull()
         val day = runCatching { LocalDate.parse(date.trim()) }.getOrNull()
         val odo = odometer.replace(',', '.').trim().takeIf { it.isNotEmpty() }?.toDoubleOrNull()
         when {
@@ -334,24 +419,38 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             day == null -> { error = "Date must look like 2026-11-02."; return }
             odometer.isNotBlank() && odo == null -> { error = "Odometer must be a number."; return }
         }
-        val entry = FuelEntry(
-            vehicleId = vehicle.id,
-            dateMillis = day!!.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
-            odometerKm = odo?.let { if (imperial) it * Units.KM_PER_MI else it },
-            liters = if (imperial) vol!! * Units.L_PER_GAL else vol!!,
-            totalCost = money!!,
-            fullTank = fullTank,
-            station = station.trim().ifBlank { null },
-            source = if (fromAi) "ai" else "manual",
-        )
-        val unit = if (imperial) "gal" else "L"
-        val label = "${fmt(vol)} $unit for ${settings.currency}${fmt(money)} on ${vehicle.name}"
-        viewModelScope.launch {
-            val id = dao.insertEntry(entry)
-            lastAdded = entry.copy(id = id)
-            clearForm()
-            error = null
-            message = (if (auto) "Added automatically: $label" else "Saved: $label") + suffix
+        val edit = editing
+        saving = true
+        try {
+            val vehicle = currentVehicleIn(dao.vehicleList())
+            if (vehicle == null) { error = "Add a vehicle first."; return }
+            val entry = FuelEntry(
+                id = edit?.id ?: 0,
+                vehicleId = vehicle.id,
+                dateMillis = day!!.atStartOfDay(ZoneId.systemDefault()).toInstant().toEpochMilli(),
+                odometerKm = odo?.let { if (imperial) it * Units.KM_PER_MI else it },
+                liters = if (imperial) vol!! * Units.L_PER_GAL else vol!!,
+                totalCost = money!!,
+                fullTank = fullTank,
+                station = station.trim().ifBlank { null },
+                source = edit?.source ?: if (fromAi) "ai" else "manual",
+            )
+            val label = "${plain(vol)} ${if (imperial) "gal" else "L"} for ${settings.currency}${fmt(money)} on ${vehicle.name}"
+            if (edit != null) {
+                dao.updateEntry(entry)
+                clearForm()
+                selectedVehicleId = null
+                error = null
+                message = "Updated: $label"
+            } else {
+                val id = dao.insertEntry(entry)
+                lastAdded = entry.copy(id = id)
+                clearForm()
+                error = null
+                message = (if (auto) "Added automatically: $label" else "Saved: $label") + suffix
+            }
+        } finally {
+            saving = false
         }
     }
 }
