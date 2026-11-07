@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
@@ -17,6 +18,8 @@ class MainActivity : ComponentActivity() {
     private val vm: AppViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Android 15 forces edge-to-edge for targetSdk 35; this also makes the status bar icons match the theme.
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) handleIntent(intent) else vm.onRestored()
         setContent {
@@ -26,6 +29,11 @@ class MainActivity : ComponentActivity() {
                 else lightColorScheme(primary = green),
             ) { App(vm) }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        vm.reloadSettings()
     }
 
     override fun onNewIntent(intent: Intent) {

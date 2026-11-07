@@ -18,17 +18,33 @@ interface FuelDao {
     @Query("SELECT * FROM vehicles ORDER BY id")
     fun vehicles(): Flow<List<Vehicle>>
 
+    /** Current vehicles, read straight from the database (the Flow may not have loaded yet). */
+    @Query("SELECT * FROM vehicles ORDER BY id")
+    suspend fun vehicleList(): List<Vehicle>
+
+    @Query("SELECT * FROM vehicles WHERE id = :id")
+    suspend fun vehicle(id: Long): Vehicle?
+
     @Insert
     suspend fun insertVehicle(v: Vehicle): Long
 
     @Update
     suspend fun updateVehicle(v: Vehicle)
 
+    @Query("UPDATE vehicles SET photoPath = :path WHERE id = :id")
+    suspend fun setVehiclePhoto(id: Long, path: String?)
+
     @Delete
     suspend fun deleteVehicle(v: Vehicle)
 
     @Query("SELECT * FROM fuel_entries ORDER BY dateMillis DESC, id DESC")
     fun entries(): Flow<List<FuelEntry>>
+
+    @Query("SELECT * FROM fuel_entries WHERE vehicleId = :vehicleId ORDER BY dateMillis DESC, id DESC LIMIT 1")
+    suspend fun lastEntry(vehicleId: Long): FuelEntry?
+
+    @Query("SELECT * FROM fuel_entries ORDER BY dateMillis DESC, id DESC LIMIT 1")
+    suspend fun lastEntryAnyVehicle(): FuelEntry?
 
     @Insert
     suspend fun insertEntry(e: FuelEntry): Long
@@ -90,6 +106,16 @@ abstract class AppDb : RoomDatabase() {
     abstract fun dao(): FuelDao
 
     companion object {
+        @Volatile private var instance: AppDb? = null
+
+        /**
+         * The app-wide database. There must be only one: Room refreshes Flows only for writes made through
+         * the same instance, and sharing a photo to GazAI opens a second activity (and ViewModel).
+         */
+        fun get(ctx: Context): AppDb =
+            instance ?: synchronized(this) { instance ?: create(ctx).also { instance = it } }
+
+        /** A new, separate instance. Use [get] in the app; this is for tests. */
         fun create(ctx: Context): AppDb =
             Room.databaseBuilder(ctx.applicationContext, AppDb::class.java, "gazai.db")
                 .addMigrations(*ALL_MIGRATIONS)

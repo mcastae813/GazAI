@@ -1,7 +1,10 @@
 package com.gazai.fuel.ui
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -33,6 +36,7 @@ private val tabs = listOf(
     Tab("Settings", Icons.Default.Settings),
 )
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun App(vm: AppViewModel) {
     Surface(Modifier.fillMaxSize()) {
@@ -50,7 +54,8 @@ fun App(vm: AppViewModel) {
                 }
             },
         ) { pad ->
-            Column(Modifier.padding(pad).fillMaxSize()) {
+            // Edge-to-edge: the window no longer shrinks for the keyboard, so pad for it here.
+            Column(Modifier.padding(pad).consumeWindowInsets(pad).imePadding().fillMaxSize()) {
                 when (vm.tab) {
                     0 -> AddScreen(vm)
                     1 -> DashboardScreen(vm)

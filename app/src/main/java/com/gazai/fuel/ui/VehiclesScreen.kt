@@ -23,6 +23,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -36,11 +37,12 @@ fun VehiclesScreen(vm: AppViewModel) {
     var editingId by remember { mutableStateOf<Long?>(null) }
     var adding by remember { mutableStateOf(false) }
     var confirmDelete by remember { mutableStateOf<Vehicle?>(null) }
-    var photoTarget by remember { mutableStateOf<Vehicle?>(null) }
+    // Saveable: Android may recreate the screen (or restart GazAI) while the photo picker is open.
+    var photoTargetId by rememberSaveable { mutableStateOf<Long?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        val v = photoTarget
-        if (uri != null && v != null) vm.setVehiclePhoto(v, uri)
-        photoTarget = null
+        val id = photoTargetId
+        if (uri != null && id != null) vm.setVehiclePhoto(id, uri)
+        photoTargetId = null
     }
     val defaultId = vm.defaultVehicle()?.id
     val s = vm.settings
@@ -79,7 +81,7 @@ fun VehiclesScreen(vm: AppViewModel) {
                             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 OutlinedButton(onClick = { editingId = v.id; adding = false }) { Text("Edit") }
                                 OutlinedButton(onClick = {
-                                    photoTarget = v
+                                    photoTargetId = v.id
                                     picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                                 }) { Text(if (v.photoPath == null) "Add photo" else "Photo") }
                                 if (v.id != defaultId) OutlinedButton(onClick = { vm.setDefault(v) }) { Text("Make default") }

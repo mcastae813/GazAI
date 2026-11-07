@@ -3,6 +3,7 @@ package com.gazai.fuel.ui
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -35,6 +37,8 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.gazai.fuel.AppViewModel
+import java.time.Instant
+import java.time.ZoneId
 
 @Composable
 fun AddScreen(vm: AppViewModel) {
@@ -47,6 +51,7 @@ fun AddScreen(vm: AppViewModel) {
         if (uri != null) { vm.imageUri = uri; vm.analyze() }
     }
     val current = vm.currentVehicle()
+    val editing = vm.editing
     val distUnit = if (s.imperial) "mi" else "km"
     val volUnit = if (s.imperial) "gal" else "L"
     val decimal = KeyboardOptions(keyboardType = KeyboardType.Decimal)
@@ -60,41 +65,55 @@ fun AddScreen(vm: AppViewModel) {
         Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Text("Fuel up", style = MaterialTheme.typography.headlineMedium)
+        Text(if (editing == null) "Fuel up" else "Edit fill-up", style = MaterialTheme.typography.headlineMedium)
 
         if (vehicles.isEmpty()) {
             Welcome(vm)
             return@Column
         }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             vehicles.forEach { v ->
                 FilterChip(
                     selected = current?.id == v.id,
-                    onClick = { vm.selectedVehicleId = v.id },
+                    onClick = { vm.pickVehicle(v.id) },
                     label = { Text(v.name + if (v.id == vm.defaultVehicle()?.id) " *" else "") },
                 )
             }
         }
 
-        Button(
-            onClick = { camera.launch(vm.newCameraUri()) },
-            enabled = !vm.busy,
-            modifier = Modifier.fillMaxWidth().height(72.dp),
-        ) {
-            if (vm.busy) CircularProgressIndicator(Modifier.padding(end = 12.dp), strokeWidth = 2.dp)
+        if (editing != null) {
+            val day = Instant.ofEpochMilli(editing.dateMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Editing the fill-up from $day", style = MaterialTheme.typography.titleMedium)
+                    Text("Change the details below and tap Save changes.", style = MaterialTheme.typography.bodySmall)
+                    TextButton(onClick = { vm.cancelEdit() }) { Text("Cancel edit") }
+                }
+            }
+        } else {
+            Button(
+                onClick = { camera.launch(vm.newCameraUri()) },
+                enabled = !vm.busy,
+                modifier = Modifier.fillMaxWidth().height(72.dp),
+            ) {
+                if (vm.busy) CircularProgressIndicator(Modifier.padding(end = 12.dp), strokeWidth = 2.dp)
+                Text(
+                    if (vm.busy) (vm.status ?: "Reading the pump...") else "Take photo of the pump",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+            if (vm.busy) {
+                OutlinedButton(onClick = { vm.cancelAnalysis() }, modifier = Modifier.fillMaxWidth()) { Text("Stop reading") }
+            }
             Text(
-                if (vm.busy) (vm.status ?: "Reading the pump...") else "Take photo of the pump",
-                style = MaterialTheme.typography.titleMedium,
+                "Point the camera at the pump so total cost and liters are visible. " +
+                    "GazAI reads them and adds the fill-up to ${current?.name ?: "your vehicle"}.",
+                style = MaterialTheme.typography.bodySmall,
             )
-        }
-        Text(
-            "Point the camera at the pump so total cost and liters are visible. " +
-                "GazAI reads them and adds the fill-up to ${current?.name ?: "your vehicle"}.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-        if (s.apiKey.isBlank()) {
-            Text("No OpenRouter key set. Add one in Settings (free).", color = MaterialTheme.colorScheme.error)
+            if (s.apiKey.isBlank()) {
+                Text("No OpenRouter key set. Add one in Settings (free).", color = MaterialTheme.colorScheme.error)
+            }
         }
 
         vm.message?.let { Text(it, color = MaterialTheme.colorScheme.primary) }
@@ -114,20 +133,23 @@ fun AddScreen(vm: AppViewModel) {
         }
         vm.error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
 
-        HorizontalDivider(Modifier.padding(vertical = 4.dp))
-        Text("Other ways to add", style = MaterialTheme.typography.titleMedium)
-        OutlinedTextField(
-            value = vm.note,
-            onValueChange = { vm.note = it },
-            label = { Text("Note (e.g. 8.2 L for 15.40, 12340 km)") },
-            modifier = Modifier.fillMaxWidth(),
-            minLines = 2,
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedButton(onClick = {
-                picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-            }) { Text("Pick photo") }
-            OutlinedButton(onClick = { vm.analyze() }, enabled = !vm.busy) { Text("Read note with AI") }
+        if (editing == null) {
+            HorizontalDivider(Modifier.padding(vertical = 4.dp))
+            Text("Other ways to add", style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = vm.note,
+                onValueChange = { vm.note = it },
+                label = { Text("Note (e.g. 8.2 L for 15.40, 12340 km)") },
+                modifier = Modifier.fillMaxWidth(),
+                minLines = 2,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedButton(
+                    onClick = { picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    enabled = !vm.busy,
+                ) { Text("Pick photo") }
+                OutlinedButton(onClick = { vm.analyze() }, enabled = !vm.busy) { Text("Read note with AI") }
+            }
         }
 
         HorizontalDivider(Modifier.padding(vertical = 4.dp))
@@ -142,7 +164,10 @@ fun AddScreen(vm: AppViewModel) {
             Switch(checked = vm.fullTank, onCheckedChange = { vm.fullTank = it })
             Text("Filled the tank completely")
         }
-        Button(onClick = { vm.save() }, modifier = Modifier.fillMaxWidth()) { Text("Save") }
+        // Disabled while the AI is reading, so a slow answer can't add a second copy of a hand-typed fill-up.
+        Button(onClick = { vm.save() }, enabled = !vm.busy && !vm.saving, modifier = Modifier.fillMaxWidth()) {
+            Text(if (editing == null) "Save" else "Save changes")
+        }
     }
 }
 

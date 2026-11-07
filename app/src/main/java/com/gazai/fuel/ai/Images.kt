@@ -2,7 +2,11 @@ package com.gazai.fuel.ai
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
 import android.graphics.ImageDecoder
+import android.graphics.Paint
+import android.graphics.Typeface
 import android.net.Uri
 import android.util.Base64
 import androidx.core.content.FileProvider
@@ -23,10 +27,31 @@ object Images {
     }
 
     /** Downscale (keeps EXIF orientation) and return a JPEG data URI small enough to send. */
-    fun toDataUri(ctx: Context, uri: Uri, maxSide: Int = 1280): String {
+    fun toDataUri(ctx: Context, uri: Uri, maxSide: Int = 1280): String = toDataUri(decode(ctx, uri, maxSide))
+
+    private fun toDataUri(bitmap: Bitmap): String {
         val out = ByteArrayOutputStream()
-        decode(ctx, uri, maxSide).compress(Bitmap.CompressFormat.JPEG, 80, out)
+        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, out)
         return "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
+    }
+
+    /** A drawn pump display showing 10.000 L for 20.00, used by Settings > Test AI connection. */
+    fun testPumpPhoto(): String {
+        val bmp = Bitmap.createBitmap(800, 500, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.rgb(24, 24, 24))
+        val label = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.LTGRAY; textSize = 40f }
+        val digits = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(255, 196, 40)
+            textSize = 100f
+            typeface = Typeface.MONOSPACE
+        }
+        c.drawText("TOTAL SALE  $", 40f, 70f, label)
+        c.drawText("20.00", 40f, 180f, digits)
+        c.drawText("LITERS", 40f, 260f, label)
+        c.drawText("10.000", 40f, 370f, digits)
+        c.drawText("PRICE PER LITER   2.000", 40f, 460f, label)
+        return toDataUri(bmp)
     }
 
     /** Copy a picked photo into app storage (downscaled) so it survives the picker URI expiring. */

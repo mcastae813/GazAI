@@ -12,8 +12,35 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      # Passed through the environment, never pasted into scripts, so the input can't inject shell code.
+      TAG: ${{ github.event.inputs.version || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags, to compare versionCode with the previous release
+      - name: Check version
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::The version must look like v1.2.3 (got '$TAG')."
+            exit 1
+          fi
+          VER="${TAG#v}"
+          NAME=$(sed -n 's/.*versionName = "\(.*\)".*/\1/p' app/build.gradle.kts)
+          CODE=$(sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p' app/build.gradle.kts)
+          if [ "$NAME" != "$VER" ]; then
+            echo "::error::app/build.gradle.kts has versionName \"$NAME\", but this release is $VER. Update versionName and versionCode first."
+            exit 1
+          fi
+          PREV=$(git tag --list 'v*' --sort=-v:refname | { grep -vx "$TAG" || true; } | head -1)
+          if [ -n "$PREV" ]; then
+            PREV_CODE=$( (git show "$PREV:app/build.gradle.kts" 2>/dev/null || true) | sed -n 's/.*versionCode = \([0-9][0-9]*\).*/\1/p')
+            if [ -n "$PREV_CODE" ] && [ "$CODE" -le "$PREV_CODE" ]; then
+              echo "::error::versionCode is $CODE, but $PREV already used $PREV_CODE. Raise it, or phones won't treat this release as an update."
+              exit 1
+            fi
+          fi
+          echo "VER=$VER" >> "$GITHUB_ENV"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -42,8 +69,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ github.event.inputs.version || github.ref_name }}"
-          VER="${TAG#v}"
           awk -v ver="$VER" '/^## /{p = ($2 == ver)} p' CHANGELOG.md > notes.md
           if [ ! -s notes.md ]; then echo "::error::No '## $VER' section in CHANGELOG.md"; exit 1; fi
           cp app/build/outputs/apk/release/app-release.apk "GazAI-${TAG}.apk"

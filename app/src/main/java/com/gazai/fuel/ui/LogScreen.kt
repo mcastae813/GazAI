@@ -9,6 +9,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -32,6 +35,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.gazai.fuel.AppViewModel
+import com.gazai.fuel.data.FuelEntry
+import com.gazai.fuel.data.MaintenanceRecord
 import com.gazai.fuel.data.consumptionByEntry
 import com.gazai.fuel.data.summarize
 import java.time.Instant
@@ -42,6 +47,23 @@ private fun FuelLog(vm: AppViewModel) {
     val vehicles by vm.vehicles.collectAsState()
     val entries by vm.entries.collectAsState()
     val s = vm.settings
+    var confirmDelete by remember { mutableStateOf<FuelEntry?>(null) }
+
+    confirmDelete?.let { e ->
+        val vName = vehicles.firstOrNull { it.id == e.vehicleId }?.name ?: "?"
+        val day = Instant.ofEpochMilli(e.dateMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete this fill-up?") },
+            text = { Text("$day, $vName: ${s.volume(e.liters)} for ${s.money(e.totalCost)}. It can't be undone.") },
+            confirmButton = {
+                TextButton(onClick = { vm.deleteEntry(e); confirmDelete = null }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
+    }
 
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -91,7 +113,8 @@ private fun FuelLog(vm: AppViewModel) {
                         ).joinToString("  |  ")
                         if (extra.isNotEmpty()) Text(extra, style = MaterialTheme.typography.bodySmall)
                     }
-                    IconButton(onClick = { vm.deleteEntry(e) }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+                    IconButton(onClick = { vm.startEdit(e) }) { Icon(Icons.Default.Edit, contentDescription = "Edit") }
+                    IconButton(onClick = { confirmDelete = e }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
                 }
             }
         }
@@ -128,9 +151,25 @@ private fun ServiceLog(vm: AppViewModel) {
     var notes by remember { mutableStateOf("") }
     var nextDue by remember { mutableStateOf("") }
     var err by remember { mutableStateOf<String?>(null) }
+    var confirmDelete by remember { mutableStateOf<MaintenanceRecord?>(null) }
     val unit = if (s.imperial) "mi" else "km"
     val decimal = KeyboardOptions(keyboardType = KeyboardType.Decimal)
     val target = vehicles.firstOrNull { it.id == vehicleId } ?: vm.defaultVehicle()
+
+    confirmDelete?.let { m ->
+        val vName = vehicles.firstOrNull { it.id == m.vehicleId }?.name ?: "?"
+        AlertDialog(
+            onDismissRequest = { confirmDelete = null },
+            title = { Text("Delete this service record?") },
+            text = { Text("${m.type} on $vName. It can't be undone.") },
+            confirmButton = {
+                TextButton(onClick = { vm.deleteMaintenance(m); confirmDelete = null }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { confirmDelete = null }) { Text("Cancel") } },
+        )
+    }
 
     LazyColumn(
         Modifier.fillMaxWidth().padding(horizontal = 16.dp),
@@ -168,7 +207,7 @@ private fun ServiceLog(vm: AppViewModel) {
                                     date = LocalDate.now().toString()
                                 }
                             }) { Text("Save") }
-                            androidx.compose.material3.TextButton(onClick = { adding = false; err = null }) { Text("Cancel") }
+                            TextButton(onClick = { adding = false; err = null }) { Text("Cancel") }
                         }
                     }
                 }
@@ -192,7 +231,7 @@ private fun ServiceLog(vm: AppViewModel) {
                         )
                         m.notes?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     }
-                    IconButton(onClick = { vm.deleteMaintenance(m) }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+                    IconButton(onClick = { confirmDelete = m }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
                 }
             }
         }

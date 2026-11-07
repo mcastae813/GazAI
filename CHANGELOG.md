@@ -2,6 +2,36 @@
 
 All notable changes to GazAI. Versions follow the GitHub release tags.
 
+## 0.4.0 - 2026-11-07
+
+### Fixed
+- Fuel efficiency is no longer lost when a full fill-up in between has no odometer reading (the usual quick-add case);
+  the stretch is measured from the next fill-up that has one
+- Cost per km now includes fill-ups without an odometer reading, which made it come out far too low
+- A fill-up shared from another app now shows up in Log and Stats when GazAI was already open
+- A pump photo no longer goes to a vehicle the AI guessed; only a typed note can choose the vehicle, and never over
+  one you picked
+- Saving by hand while the AI was still reading could add the fill-up twice
+- Reading a photo now stops after 2 minutes at most instead of trying model after model for several minutes
+- A total like "1,050" is read as one thousand and fifty, not 1.05
+- The vehicle you picked is kept if Android closes GazAI while the camera is open
+- A vehicle photo picked while Android recreated the screen is no longer dropped
+- Edge-to-edge display (Android 15 requires it): the window background and status bar icons follow dark mode, and
+  the form is padded for the on-screen keyboard
+
+### Added
+- Edit a fill-up from the Log (pencil button)
+- "Stop reading" button while the AI reads a photo
+- AI readings that don't add up (volume x price isn't the total, more than the tank holds, or a price far from your
+  last fill-up) are not saved automatically; you're asked to check them
+- Deleting a fill-up or service record asks first
+- "Test AI connection" also checks that a photo can be read
+
+### Changed
+- The OpenRouter key is kept out of Android's cloud backup
+- The README and Settings say plainly what is sent to OpenRouter and free model providers
+- The Release workflow checks that the tag matches `versionName` and that `versionCode` went up
+
 ## 0.3.0 - 2026-11-04
 
 > **One-time reinstall:** 0.1 and 0.2 were signed with a throwaway key, so Android refuses to install 0.3
