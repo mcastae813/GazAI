@@ -1,5 +1,12 @@
 # GazAI
 
+[![Build](https://github.com/mcastae813/GazAI/actions/workflows/build.yml/badge.svg?branch=main)](https://github.com/mcastae813/GazAI/actions/workflows/build.yml)
+[![Latest release](https://img.shields.io/github/v/release/mcastae813/GazAI)](https://github.com/mcastae813/GazAI/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/mcastae813/GazAI/total)](https://github.com/mcastae813/GazAI/releases)
+[![Visits](https://hits.sh/github.com/mcastae813/GazAI.svg?label=visits)](https://hits.sh/github.com/mcastae813/GazAI/)
+![Android 9+](https://img.shields.io/badge/Android-9%2B-3DDC84?logo=android&logoColor=white)
+[![License: MIT](https://img.shields.io/github/license/mcastae813/GazAI)](LICENSE)
+
 Android fuel tracker for cars and motorcycles, inspired by Fuelio-style apps (fuel.io is closed source, so this is a from-scratch build).
 Open the app, photograph the pump, done: a **free OpenRouter model** reads the total cost and liters and logs the fill-up.
 
